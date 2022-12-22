@@ -22,7 +22,7 @@ class Solver:
         # Mesh
         self.nptz, self.nptx = model.shape # number of grid points
         self.nz, self.nx = self.nptz - 1, self.nptx - 1
-        self.nt = nt
+        self.nt = int(nt)
         self.h = np.float64(h)
         self.dt = np.float64(dt)
 
@@ -43,16 +43,6 @@ class Solver:
         self.dominant_freq = dominant_freq
         self.source_time = ricker(self.dt, self.nt, self.peak_time, self.dominant_freq)
 
-
-        # if source_time is None:
-        #     min_vel = model.min()
-        #     nt = int(1.5 * self.nz * self.h / (min_vel * self.dt))
-        #     dominant_freq = 10.0
-        #     peak_time = 1 / dominant_freq
-        #     self.source_time = ricker(dt, nt, peak_time, dominant_freq)
-        # else:
-        #     self.source_time = source_time
-
         # PML
         self.pml_width = pml_width
         self.pad_width = pad_width
@@ -69,7 +59,7 @@ class Solver:
         self.sigma_x = np.zeros(self.nptx_padded, np.float64)
         self.sigma_x[self.total_pad-1:self.pad_width-1:-1] = profile 
         self.sigma_x[-self.total_pad:-self.pad_width] = profile
-        self.sigma_x[:pad_width] = self.sigma_x[pad_width]
+        self.sigma_x[:self.pad_width] = self.sigma_x[self.pad_width]
         self.sigma_x[-self.pad_width:] = self.sigma_x[-self.pad_width-1]
         self.sigma_x = np.tile(self.sigma_x, (self.nptz_padded, 1))
 
