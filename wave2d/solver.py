@@ -17,7 +17,7 @@ def ricker(dt, nt, peak_time, dominant_freq):
 
 class Solver:
     def __init__(self, model, h, dt, nt, peak_time, dominant_freq,
-            sources_xz, receivers_xz, pml_width=10, pad_width=10):
+            sources_xz, receivers_xz=None, pml_width=10, pad_width=10):
         
         # Mesh
         self.nptz, self.nptx = model.shape # number of grid points
