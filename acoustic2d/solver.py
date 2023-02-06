@@ -3,7 +3,7 @@ Staggered grid Finite difference solver for 2d wave equations
 with perfectly matched layer 
 
 @author: zchen
-@date: 20220-12-22
+@date: 2022-12-22
 """
 
 import numpy as np
@@ -39,7 +39,7 @@ class Solver:
         assert cfl < 1 
         print(f'CFL number is {cfl}')
 
-        # source time function
+        # Source time function
         self.peak_time = peak_time 
         self.dominant_freq = dominant_freq
         self.source_time = ricker(self.dt, self.nt, self.peak_time, self.dominant_freq)

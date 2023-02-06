@@ -2,11 +2,14 @@
 Staggered grid Finite difference solver for 2d elastic wave equations
 with perfectly matched layer 
 
+For more details, please refernce this paper: https://hal.inria.fr/inria-00073219/file/RR-3471.pdf
+
 @author: zchen
 @date: 2023-01-05
 """
 
 import numpy as np
+from scipy.interpolate import griddata
 
 def ricker(dt, nt, peak_time, dominant_freq):
     """Ricker wavelet with specific dominant frequency"""
@@ -17,11 +20,11 @@ def ricker(dt, nt, peak_time, dominant_freq):
 
 
 class Solver:
-    def __init__(self, rho, ld, mu, 
+    def __init__(self, rho, vp, vs, 
                 nx, nz, h, dt, nt, peak_time, dominant_freq,
                 sources_xz, receivers_xz=None, 
                 pml_width=10, pad_width=10):
-        
+
         # Mesh
         self.nz, self.nx = int(nz), int(nx)
         self.nptz, self.nptx = nz + 1, nx + 1 # number of grid points
@@ -29,11 +32,6 @@ class Solver:
         self.h = np.float64(h)
         self.dt = np.float64(dt)
  
-        # Model
-        self.rho = rho # density
-        self.ld = ld # lame parameters
-        self.mu = mu # lame parameters
-
         # Sources and receivers
         self.sources_xz = sources_xz
         self.receivers_xz = receivers_xz
@@ -52,7 +50,47 @@ class Solver:
         self.total_pad = pml_width + pad_width
         self.nptx_padded = self.nptx + 2 * self.total_pad 
         self.nptz_padded = self.nptz + 2 * self.total_pad
-        
+
+        # Model
+        # homogenenous
+        if isinstance(rho, float) and isinstance(vp, float) and isinstance(vs, float):
+            self.rho = np.ones((self.nptz, self.nptx)) * rho 
+            self.vp = np.ones((self.nptz, self.nptx)) * vp 
+            self.vs = np.ones((self.nptz, self.nptx)) * vs
+        else:
+            self.rho = rho 
+            self.vp = vp 
+            self.vs = vs 
+        self.rho_padded = np.pad(self.rho, ((self.total_pad, self.total_pad), (self.total_pad, self.total_pad)), 'edge')
+        self.vp_padded = np.pad(self.vp, ((self.total_pad, self.total_pad), (self.total_pad, self.total_pad)), 'edge')
+        self.vs_padded = np.pad(self.vs, ((self.total_pad, self.total_pad), (self.total_pad, self.total_pad)), 'edge')
+        self.mu_padded = self.rho_padded * self.vs_padded**2
+        self.ld_padded = self.rho_padded * self.vp_padded**2 - 2 * self.mu_padded
+        x = np.arange(self.nptx_padded) * h
+        z = np.arange(self.nptz_padded) * h
+        X, Z = np.meshgrid(x, z)
+        points = np.hstack((X.flatten()[:, np.newaxis], Z.flatten()[:, np.newaxis]))
+        xh = x[:-1] + h/2
+        zh = z[:-1] + h/2
+        # ld, mu on (i+1/2, j)
+        grid_x, grid_z = np.meshgrid(xh, z)
+        points_ihj = np.hstack((grid_x.flatten()[:, np.newaxis], grid_z.flatten()[:, np.newaxis]))
+        self.ld_padded_ihj = griddata(points, self.ld_padded.flatten()[:, np.newaxis], points_ihj, method='cubic')
+        self.ld_padded_ihj = self.ld_padded_ihj.reshape(self.nptz_padded, self.nptx_padded-1)
+        self.mu_padded_ihj = griddata(points, self.mu_padded.flatten()[:, np.newaxis], points_ihj, method='cubic')
+        self.mu_padded_ihj = self.mu_padded_ihj.reshape(self.nptz_padded, self.nptx_padded-1)
+        # mu on (i, j+1/2)
+        grid_x, grid_z = np.meshgrid(x, zh)
+        points_ijh = np.hstack((grid_x.flatten()[:, np.newaxis], grid_z.flatten()[:, np.newaxis]))
+        self.mu_padded_ijh = griddata(points, self.mu_padded.flatten()[:, np.newaxis], points_ijh, method='cubic')
+        self.mu_padded_ijh = self.mu_padded_ijh.reshape(self.nptz_padded-1, self.nptx_padded)
+        # rho on (i+1/2, j+1/2)
+        grid_x, grid_z = np.meshgrid(xh, zh)
+        points_ihjh = np.hstack((grid_x.flatten()[:, np.newaxis], grid_z.flatten()[:, np.newaxis]))
+        self.rho_padded_ihjh = griddata(points, self.rho_padded.flatten()[:, np.newaxis], points_ihjh, method='cubic')
+        self.rho_padded_ihjh = self.rho_padded_ihjh.reshape(self.nptz_padded-1, self.nptx_padded-1)
+
+
         # Dampling factor
         profile = 40.0 + 60.0 * np.arange(pml_width, dtype=np.float64) 
         profile_h = 40.0 + 60.0 * (np.arange(pml_width, dtype=np.float64) - 0.5) # profile at half grid 
@@ -157,35 +195,46 @@ class Solver:
         vy_y = self._vy_first_y_deriv(cur_vy)
 
         next_sxx_x = (
-            (self.ld + 2 * self.mu) * self.dt * vx_x 
+            (self.ld_padded_ihj + 2 * self.mu_padded_ihj) * self.dt * vx_x 
             + self.cur_sxx_x 
-            - self.dt * self.d_xh * self.cur_sxx_x
+            - self.dt * self.d_xh * self.cur_sxx_x / 2
         )
+        next_sxx_x /= (1 + self.dt * self.d_xh / 2)
+
         next_sxx_y = (
-            self.ld * self.dt * vy_y 
+            self.ld_padded_ihj * self.dt * vy_y 
             + self.cur_sxx_y
-            - self.dt * self.dy_ihj * self.cur_sxx_y
+            - self.dt * self.dy_ihj * self.cur_sxx_y / 2
         )
+        next_sxx_y /= (1 + self.dt * self.dy_ihj / 2)
+
         next_syy_x = (
-            self.ld * self.dt * vx_x 
+            self.ld_padded_ihj * self.dt * vx_x 
             + self.cur_syy_x
-            - self.dt * self.dx_ihj * self.cur_syy_x
+            - self.dt * self.dx_ihj * self.cur_syy_x / 2
         )
+        next_syy_x /= (1 + self.dx_ihj * self.dt / 2)
+
         next_syy_y = (
-            (self.ld + 2 * self.mu) * self.dt * vy_y 
+            (self.ld_padded_ihj + 2 * self.mu_padded_ihj) * self.dt * vy_y 
             + self.cur_syy_y 
-            - self.dt * self.dy_ihj * self.cur_syy_y
+            - self.dt * self.dy_ihj * self.cur_syy_y / 2
         )
+        next_syy_y /= (1 + self.dy_ihj * self.dt / 2)
+
         next_sxy_x = (
-            self.mu * self.dt * vy_x 
+            self.mu_padded_ijh * self.dt * vy_x 
             + self.cur_sxy_x 
-            - self.dt * self.dx_ijh * self.cur_sxy_x
+            - self.dt * self.dx_ijh * self.cur_sxy_x / 2
         )
+        next_sxy_x /= (1 + self.dt * self.dx_ijh / 2)
+
         next_sxy_y = (
-            self.mu * self.dt * vx_y 
+            self.mu_padded_ijh * self.dt * vx_y 
             + self.cur_sxy_y
-            - self.dt * self.dy_ijh * self.cur_sxy_y
+            - self.dt * self.dy_ijh * self.cur_sxy_y / 2
         )
+        next_sxy_y /= (1 + self.dy_ijh * self.dt / 2)
 
         next_sxx = next_sxx_x + next_sxx_y 
         next_sxy = next_sxy_x + next_sxy_y
@@ -197,25 +246,32 @@ class Solver:
         syy_y = self._syy_first_y_deriv(next_syy)
 
         next_vx_x = (
-            self.dt * sxx_x / self.rho
+            self.dt * sxx_x / self.rho_padded
             + self.cur_vx_x 
-            - self.dx_ij * self.dt * self.cur_vx_x 
+            - self.dx_ij * self.dt * self.cur_vx_x / 2
         ) 
+        next_vx_x /= (1 + self.dt * self.dx_ij / 2)
+
         next_vx_y = ( 
-            self.dt * sxy_y / self.rho 
+            self.dt * sxy_y / self.rho_padded
             + self.cur_vx_y 
-            - self.dy_ij * self.dt * self.cur_vx_y
+            - self.dy_ij * self.dt * self.cur_vx_y / 2
         )
+        next_vx_y /= (1 + self.dt * self.dy_ij / 2)
+
         next_vy_x = ( 
-            self.dt *  sxy_x / self.rho 
+            self.dt *  sxy_x / self.rho_padded_ihjh
             + self.cur_vy_x 
-            - self.dt * self.dx_ihjh * self.cur_vy_x   
+            - self.dt * self.dx_ihjh * self.cur_vy_x / 2
         )
+        next_vy_x /= (1 + self.dt * self.dx_ihjh / 2)
+
         next_vy_y = (
-            self.dt * syy_y / self.rho 
+            self.dt * syy_y / self.rho_padded_ihjh
             + self.cur_vy_y 
-            - self.dt * self.dy_ihjh * self.cur_vy_y
+            - self.dt * self.dy_ihjh * self.cur_vy_y / 2
         )
+        next_vy_y /= (1 + self.dt * self.dy_ihjh / 2)
                 
 
         # Add source 
@@ -242,7 +298,8 @@ class Solver:
 
         if self.receivers_xz is not None:
             num_receivers = len(self.receivers_xz)
-            self.seismogram = np.zeros((self.num_shots, num_receivers, len(self.source_time)))
+            self.seismogram_vx = np.zeros((self.num_shots, num_receivers, len(self.source_time)))
+            self.seismogram_vy = np.zeros((self.num_shots, num_receivers, len(self.source_time)))
 
         for nt in range(self.nt):
             state = self._one_step(nt)
@@ -251,7 +308,8 @@ class Solver:
             actual_vy = next_vy[:, self.total_pad:-self.total_pad, self.total_pad:-self.total_pad]
              
             if self.receivers_xz is not None:
-                self.seismogram[:, :, nt] = actual_vx[:, self.receivers_xz[:, 0], self.receivers_xz[:, 1]]
+                self.seismogram_vx[:, :, nt] = actual_vx[:, self.receivers_xz[:, 0], self.receivers_xz[:, 1]]
+                self.seismogram_vy[:, :, nt] = actual_vy[:, self.receivers_xz[:, 0], self.receivers_xz[:, 1]]
             if save_nt is not None and nt in save_nt:
                 self.vx.append(actual_vx)
                 self.vy.append(actual_vy)
